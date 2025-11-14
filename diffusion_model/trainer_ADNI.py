@@ -23,6 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 import datetime
 import time
 import os
+import wandb
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -311,11 +312,12 @@ class Trainer(object):
         train_batch_size = 2,
         train_lr = 2e-6,
         train_num_steps = 100000,
-        gradient_accumulate_every = 2,
+        gradient_accumulate_every = 2, 
         fp16 = False,
         step_start_ema = 2000,
         update_ema_every = 10,
         save_and_sample_every = 1000,
+        initial_weights=None,
         results_folder = './results',
         with_condition = False,
         with_pairwised = False):
@@ -333,6 +335,7 @@ class Trainer(object):
         self.depth_size = depth_size
         self.gradient_accumulate_every = gradient_accumulate_every
         self.train_num_steps = train_num_steps
+        self.initial_weights=initial_weights
 
         self.ds = dataset
         self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, num_workers=4, pin_memory=True))
@@ -348,17 +351,28 @@ class Trainer(object):
         if fp16:
             (self.model, self.ema_model), self.opt = amp.initialize([self.model, self.ema_model], self.opt, opt_level='O1')
         
+        # Save model in ./results
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(exist_ok = True)
-        self.log_dir = self.create_log_dir()
-        self.writer = SummaryWriter(log_dir=self.log_dir)#"./logs")
+        self.log = self.wandb_log()
         self.reset_parameters()
 
-    def create_log_dir(self):
-        now = datetime.datetime.now().strftime("%y-%m-%dT%H%M%S")
-        log_dir = os.path.join("./logs", now)
-        os.makedirs(log_dir, exist_ok=True)
-        return log_dir
+    def wandb_log(self):
+        #log with weights and biases 
+        now=datetime.datetime.now().strftime("%y-%m-%dT%H%M%S")
+        wandb.init(project="med-ddpm", name=f"{now} ",
+                   config={
+                       "learning_rate": self.train_lr,
+                       "batch_size" : self.batch_size,
+                       "image_size" : self.image_size,
+                       "steps" : self.train_num_steps,
+                       "update_ema_every" : self.update_ema_every,
+                       "gradient_accumulate_every": self.gradient_accumulate_every,
+                       "sample_every" : self.save_and_sample_every,
+                       "initial_weights" :self.initial_weights
+
+                       })
+
 
     def reset_parameters(self):
         self.ema_model.load_state_dict(self.model.state_dict())
@@ -376,6 +390,9 @@ class Trainer(object):
             'ema': self.ema_model.state_dict()
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+
+        # weigts and biases
+        wandb.save(str(self.results_folder / f'model-{milestone}.pt'))
 
     def load(self, milestone):
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'))
@@ -395,7 +412,7 @@ class Trainer(object):
                     data = next(self.dl)
                     input_tensors = data['input'].cuda()
                     target_tensors = data['target'].cuda()
-                    diagnosis = torch.tensor(data['diagnosis']).cuda()
+                    diagnosis = torch.tensor(data['diagnosis']).long().cuda()
                     loss = self.model(target_tensors, condition_tensors=input_tensors, diagnosis=diagnosis) # y= diagnosis: condition for class-conditional diffusion
                 else:
                     data = next(self.dl).cuda()
@@ -408,7 +425,8 @@ class Trainer(object):
             # Record here
             average_loss = np.mean(accumulated_loss)
             end_time = time.time()
-            self.writer.add_scalar("training_loss", average_loss, self.step)
+            #self.writer.add_scalar("training_loss", average_loss, self.step)
+            wandb.log({"step": self.step, "training_loss ": average_loss})
 
             self.opt.step()
             self.opt.zero_grad()
@@ -440,6 +458,10 @@ class Trainer(object):
                 #sampleImage=sampleImage.reshape([self.image_size, self.image_size, self.depth_size])
                 nifti_img = nib.Nifti1Image(sampleImage, affine=np.eye(4))
                 nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
+
+                #save central slice weight and biases
+                middle_slice=sampleImage[:, :, self.depth_size//2]
+                wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
                
                 self.save(milestone)
 
@@ -448,14 +470,5 @@ class Trainer(object):
         print('training completed')
         end_time = time.time()
         execution_time = (end_time - start_time)/3600
-        self.writer.add_hparams(
-            {
-                "lr": self.train_lr,
-                "batchsize": self.train_batch_size,
-                "image_size":self.image_size,
-                "depth_size":self.depth_size,
-                "execution_time (hour)":execution_time
-            },
-            {"last_loss":average_loss}
-        )
-        self.writer.close()
+        wandb.log({"execution_time_h": execution_time, "final_loss": average_loss})
+        

@@ -1,3 +1,5 @@
+# unet_ADNI.py
+
 #-*- coding:utf-8 -*-
 # *Main part of the code is adopted from the following repository: https://github.com/openai/guided-diffusion
 
