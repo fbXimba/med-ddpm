@@ -24,6 +24,7 @@ print(f"CUDA AVAILABLE: {torch.cuda.is_available}")
 
 # -
 
+# Load WandB key from yaml
 with open("key.yaml") as file:
     config=yaml.safe_load(file)
 key=config["wandb"]["key"]
@@ -38,7 +39,14 @@ parser.add_argument('--depth_size', type=int, default=128) # already for preproc
 parser.add_argument('--num_channels', type=int, default=64)
 parser.add_argument('--num_res_blocks', type=int, default=2)
 parser.add_argument('--num_class_labels', type=int, default=3)
-parser.add_argument('--train_lr', type=float, default=1e-4) # ex e5
+parser.add_argument('--train_lr', type=float, default=2e-4) # ex e5
+# exponential lr scheduler parameters + warmup
+parser.add_argument('--lr_decay_rate', type=float, default=0.9999)  # learning rate decay rate for ExponentialLR
+parser.add_argument('--lr_warmup_steps', type=int, default=5000)  # decay steps for learning rate scheduler 
+parser.add_argument('--lr_min', type=float, default=2e-7)  # minimum learning rate after warmup
+## plateau lr scheduler parameters
+#parser.add_argument('--lr_plateau_factor', type=float, default=0.5)  # factor for ReduceLROnPlateau
+#parser.add_argument('--lr_plateau_patience', type=int, default=500)  # patience for ReduceLROnPlateau
 parser.add_argument('--batchsize', type=int, default=1)
 parser.add_argument('--epochs', type=int, default=100000) # epochs parameter specifies the number of training iterations # ex 50000
 parser.add_argument('--timesteps', type=int, default=250)
@@ -135,7 +143,7 @@ diffusion = GaussianDiffusion(
     image_size = input_size,
     depth_size = depth_size,
     timesteps = args.timesteps,   # number of steps
-    loss_type = 'l1',    # L1 or L2
+    loss_type = 'l1',    # L1 or L2 # L1 = (1/n) * Σ|y_true — y_pred|
     with_condition=with_condition,
     channels=out_channels
 ).cuda()#to(device)
@@ -203,6 +211,13 @@ trainer = Trainer(
     with_condition=with_condition,
     save_and_sample_every = save_and_sample_every,
     initial_weights=initial_weights,
+    # exp lr scheduler parameters
+    lr_decay_rate = args.lr_decay_rate,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
+    lr_warmup_steps = args.lr_warmup_steps,  # warmup--> exp decay steps
+    ## plateau lr scheduler parameters
+    #lr_plateau_factor = args.lr_plateau_factor,
+    #lr_plateau_patience = args.lr_plateau_patience,
+    lr_min = args.lr_min,
 )
 
 trainer.train()

@@ -13,6 +13,8 @@ from functools import partial
 from torch.utils import data
 from pathlib import Path
 from torch.optim import Adam
+from torch.optim.lr_scheduler import ExponentialLR # learning rate exponential scheduler
+from torch.optim.lr_scheduler import ReduceLROnPlateau # learning rate reduction on plateau
 from torchvision import transforms, utils
 from PIL import Image
 import nibabel as nib
@@ -310,7 +312,7 @@ class Trainer(object):
         image_size = 128,
         depth_size = 128,
         train_batch_size = 2,
-        train_lr = 2e-6,
+        train_lr = 2e-4,
         train_num_steps = 100000,
         gradient_accumulate_every = 2, 
         fp16 = False,
@@ -320,7 +322,15 @@ class Trainer(object):
         initial_weights=None,
         results_folder = './results',
         with_condition = False,
-        with_pairwised = False):
+        with_pairwised = False,
+        # exp lr scheduler parameters
+        lr_decay_rate = 0.9999,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
+        lr_warmup_steps = 5000,  # decay steps for learning rate scheduler
+        ## plateau lr scheduler parameters
+        #lr_plateau_factor = 0.5,
+        #lr_plateau_patience = 500,
+        lr_min = 2e-7,
+        ):
         super().__init__()
         self.model = diffusion_model
         self.ema = EMA(ema_decay)
@@ -340,6 +350,17 @@ class Trainer(object):
         self.ds = dataset
         self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, num_workers=4, pin_memory=True))
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
+
+        # Learning rate scheduler: ExponentialLR
+        self.lr_scheduler = ExponentialLR(self.opt, gamma=lr_decay_rate)  # learning rate exponential scheduler
+        self.lr_warmup_steps = lr_warmup_steps # total decay steps
+
+        ## Learning rate reduction on plateau
+        #self.lr_plateau_scheduler = ReduceLROnPlateau(self.opt, mode='min', factor=lr_plateau_factor, patience=lr_plateau_patience, verbose=True)
+
+        self.lr_decay_rate = lr_decay_rate
+        self.lr_min = lr_min
+
         self.train_lr = train_lr
         self.train_batch_size = train_batch_size
         self.with_condition = with_condition
@@ -362,7 +383,10 @@ class Trainer(object):
         now=datetime.datetime.now().strftime("%y-%m-%dT%H%M%S")
         wandb.init(project="med-ddpm", name=f"{now} ",
                    config={
+                       "epochs": self.train_num_steps,
                        "learning_rate": self.train_lr,
+                       "lr_warmup_steps": self.lr_warmup_steps,
+                       "lr_decay_rate": self.lr_decay_rate,
                        "batch_size" : self.batch_size,
                        "image_size" : self.image_size,
                        "steps" : self.train_num_steps,
@@ -391,7 +415,7 @@ class Trainer(object):
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
 
-        # weigts and biases
+        # weights and biases: save model checkpoint
         wandb.save(str(self.results_folder / f'model-{milestone}.pt'))
 
     def load(self, milestone):
@@ -425,15 +449,39 @@ class Trainer(object):
             # Record here
             average_loss = np.mean(accumulated_loss)
             end_time = time.time()
-            #self.writer.add_scalar("training_loss", average_loss, self.step)
-            wandb.log({"step": self.step, "training_loss ": average_loss})
 
+            # Optimizer step
             self.opt.step()
             self.opt.zero_grad()
 
+            if self.step < self.lr_warmup_steps:
+                # Linear warmup                 
+                lr_scale = (self.step + 1) / self.lr_warmup_steps
+                current_lr = self.train_lr * lr_scale
+                for param_group in self.opt.param_groups:
+                    param_group['lr'] = current_lr
+            elif self.step >= self.lr_warmup_steps and current_lr > self.lr_min: # after fixed number of steps = warmup but less than min lr
+                # Ensure lr is set to train_lr at the end of warmup
+                if self.step == self.lr_warmup_steps: # at the end of warmup, set lr to train_lr if not already reached
+                    for param_group in self.opt.param_groups:
+                        param_group['lr'] = self.train_lr
+                # Learning rate scheduler (ExponentialLR) if within decay steps: after lr_decay_start
+                self.lr_scheduler.step() # modifies learning rate based on exponential decay term
+            else:
+                continue  # maintain minimum learning rate
+
+            # else:
+            # Learning rate reduction on plateau #look at factor and patience values
+            #self.lr_plateau_scheduler.step(average_loss) # modifies learning rate based on plateau of average loss
+
+            # Get current learning rate because of warmup + decay implementation
+            current_lr = self.opt.param_groups[0]['lr'] # get current learning rate: takes into account decay if any
+
+            # Update EMA model every update_ema_every steps
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
 
+            # Save model and sample images every save_and_sample_every steps
             if self.step != 0 and self.step % self.save_and_sample_every == 0:
                 milestone = self.step // self.save_and_sample_every
                 batches = num_to_groups(1, self.batch_size)
@@ -459,11 +507,17 @@ class Trainer(object):
                 nifti_img = nib.Nifti1Image(sampleImage, affine=np.eye(4))
                 nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
 
-                #save central slice weight and biases
+                #save central slice weights and biases
                 middle_slice=sampleImage[:, :, self.depth_size//2]
                 wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
                
                 self.save(milestone)
+
+            # Log training info to weights and biases
+            wandb.log({"step": self.step,
+                       "learning_rate": current_lr,
+                       "training_loss": average_loss
+            })
 
             self.step += 1
 
