@@ -14,6 +14,7 @@ from torch.utils import data
 from pathlib import Path
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR # learning rate exponential scheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR # learning rate cosine annealing scheduler
 from torch.optim.lr_scheduler import ReduceLROnPlateau # learning rate reduction on plateau
 from torchvision import transforms, utils
 from PIL import Image
@@ -323,9 +324,9 @@ class Trainer(object):
         results_folder = './results',
         with_condition = False,
         with_pairwised = False,
-        # exp lr scheduler parameters
-        lr_decay_rate = 0.9999,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
-        lr_warmup_steps = 5000,  # decay steps for learning rate scheduler
+        lr_warmup_steps = 5000,  # warmup steps: LINEAR increase
+        ## exp lr scheduler parameters
+        #lr_decay_rate = 0.9999,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
         ## plateau lr scheduler parameters
         #lr_plateau_factor = 0.5,
         #lr_plateau_patience = 500,
@@ -350,17 +351,19 @@ class Trainer(object):
         self.ds = dataset
         self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, num_workers=4, pin_memory=True))
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
+        self.lr_warmup_steps = lr_warmup_steps # number of warmup steps: LINEAR increase of lr
 
-        # Learning rate scheduler: ExponentialLR
-        self.lr_scheduler = ExponentialLR(self.opt, gamma=lr_decay_rate)  # learning rate exponential scheduler
-        self.lr_warmup_steps = lr_warmup_steps # total decay steps
-
+        # Learning rate scheduler: CosineAnnealingLR
+        self.lr_scheduler = CosineAnnealingLR(self.opt, T_max=train_num_steps - lr_warmup_steps, eta_min=lr_min) # LR minimo alla fine del training
+        
+        ## Learning rate scheduler: ExponentialLR
+        #self.lr_scheduler = ExponentialLR(self.opt, gamma=lr_decay_rate)  # learning rate exponential scheduler
+        
         ## Learning rate reduction on plateau
         #self.lr_plateau_scheduler = ReduceLROnPlateau(self.opt, mode='min', factor=lr_plateau_factor, patience=lr_plateau_patience, verbose=True)
+        #self.lr_decay_rate = lr_decay_rate
 
-        self.lr_decay_rate = lr_decay_rate
         self.lr_min = lr_min
-
         self.train_lr = train_lr
         self.train_batch_size = train_batch_size
         self.with_condition = with_condition
@@ -386,7 +389,8 @@ class Trainer(object):
                        "epochs": self.train_num_steps,
                        "learning_rate": self.train_lr,
                        "lr_warmup_steps": self.lr_warmup_steps,
-                       "lr_decay_rate": self.lr_decay_rate,
+                       #"lr_decay_rate": self.lr_decay_rate,
+                       "lr_min": self.lr_min,
                        "batch_size" : self.batch_size,
                        "image_size" : self.image_size,
                        "steps" : self.train_num_steps,
@@ -454,21 +458,30 @@ class Trainer(object):
             self.opt.step()
             self.opt.zero_grad()
 
+            current_lr = self.opt.param_groups[0]['lr']
             if self.step < self.lr_warmup_steps:
                 # Linear warmup                 
                 lr_scale = (self.step + 1) / self.lr_warmup_steps
                 current_lr = self.train_lr * lr_scale
                 for param_group in self.opt.param_groups:
                     param_group['lr'] = current_lr
-            elif self.step >= self.lr_warmup_steps and current_lr > self.lr_min: # after fixed number of steps = warmup but less than min lr
+            else: # after fixed number of steps = warmup
                 # Ensure lr is set to train_lr at the end of warmup
                 if self.step == self.lr_warmup_steps: # at the end of warmup, set lr to train_lr if not already reached
                     for param_group in self.opt.param_groups:
                         param_group['lr'] = self.train_lr
-                # Learning rate scheduler (ExponentialLR) if within decay steps: after lr_decay_start
-                self.lr_scheduler.step() # modifies learning rate based on exponential decay term
-            else:
-                continue  # maintain minimum learning rate
+                # Learning rate scheduler (CosineAnnealingLR): modifies learning rate based on cosine annealing
+                self.lr_scheduler.step() # no need for lr_min as already taken into account in CosineAnnealingLR
+
+            #elif self.step >= self.lr_warmup_steps and current_lr > self.lr_min: # after fixed number of steps = warmup but less than min lr
+            #    # Ensure lr is set to train_lr at the end of warmup
+            #    if self.step == self.lr_warmup_steps: # at the end of warmup, set lr to train_lr if not already reached
+            #        for param_group in self.opt.param_groups:
+            #            param_group['lr'] = self.train_lr
+            #    # Learning rate scheduler (ExponentialLR) 
+            #    self.lr_scheduler.step() # modifies learning rate based on exponential decay term
+            #else:
+            #    continue  # maintain minimum learning rate
 
             # else:
             # Learning rate reduction on plateau #look at factor and patience values

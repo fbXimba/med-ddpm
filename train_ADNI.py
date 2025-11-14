@@ -40,8 +40,8 @@ parser.add_argument('--num_channels', type=int, default=64)
 parser.add_argument('--num_res_blocks', type=int, default=2)
 parser.add_argument('--num_class_labels', type=int, default=3)
 parser.add_argument('--train_lr', type=float, default=2e-4) # ex e5
-# exponential lr scheduler parameters + warmup
-parser.add_argument('--lr_decay_rate', type=float, default=0.9999)  # learning rate decay rate for ExponentialLR
+## exponential lr scheduler parameters + warmup
+#parser.add_argument('--lr_decay_rate', type=float, default=0.9999)  # learning rate decay rate for ExponentialLR
 parser.add_argument('--lr_warmup_steps', type=int, default=5000)  # decay steps for learning rate scheduler 
 parser.add_argument('--lr_min', type=float, default=2e-7)  # minimum learning rate after warmup
 ## plateau lr scheduler parameters
@@ -211,9 +211,9 @@ trainer = Trainer(
     with_condition=with_condition,
     save_and_sample_every = save_and_sample_every,
     initial_weights=initial_weights,
-    # exp lr scheduler parameters
-    lr_decay_rate = args.lr_decay_rate,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
-    lr_warmup_steps = args.lr_warmup_steps,  # warmup--> exp decay steps
+    lr_warmup_steps = args.lr_warmup_steps,  # warmup--> start of lr decay steps # now cosine annealing lr scheduler
+    ## exp lr scheduler parameters
+    #lr_decay_rate = args.lr_decay_rate,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
     ## plateau lr scheduler parameters
     #lr_plateau_factor = args.lr_plateau_factor,
     #lr_plateau_patience = args.lr_plateau_patience,
