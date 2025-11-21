@@ -17,6 +17,7 @@ import pandas as pd
 import json
 import yaml
 import wandb
+import datetime
 
 
 #device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -33,6 +34,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--inputfolder', type=str, default="../ADNI_split/ADNI_train_dataset/mask/")
 parser.add_argument('-t', '--targetfolder', type=str, default="../ADNI_split/ADNI_train_dataset/image/")
 parser.add_argument('-d', '--diagnosisfolder', type=str, default="../ADNI_split/ADNI_train_dataset/diagnosis/")
+parser.add_argument('--validationfolder', type=str, default="../ADNI_split/ADNI_test_dataset/")
 parser.add_argument('--key', type=str, default=key ,help="Weights and Biases key for logging")
 parser.add_argument('--input_size', type=int, default=128) # already for preprocessed ADNI
 parser.add_argument('--depth_size', type=int, default=128) # already for preprocessed ADNI
@@ -48,9 +50,10 @@ parser.add_argument('--lr_min', type=float, default=2e-7)  # minimum learning ra
 #parser.add_argument('--lr_plateau_factor', type=float, default=0.5)  # factor for ReduceLROnPlateau
 #parser.add_argument('--lr_plateau_patience', type=int, default=500)  # patience for ReduceLROnPlateau
 parser.add_argument('--batchsize', type=int, default=1)
-parser.add_argument('--epochs', type=int, default=100000) # epochs parameter specifies the number of training iterations # ex 50000
+parser.add_argument('--epochs', type=int, default=200000) # epochs parameter specifies the number of training iterations # ex 50000
 parser.add_argument('--timesteps', type=int, default=250)
 parser.add_argument('--save_and_sample_every', type=int, default=1000)
+parser.add_argument('--loss_type', type=str, default="l2")
 parser.add_argument('--with_condition', action='store_true', help='whether to use condition or not with semantic mask and diagnosis label')
 parser.add_argument('-r', '--resume_weight', type=str, default="model/model_128.pt")
 
@@ -121,12 +124,12 @@ except Exception as e:
 
 check_points = args.epochs//save_and_sample_every
 
-print(f"Numero di checkpointss: {check_points}")
+print(f"Number of checkpoints: {check_points}")
 
 # Define model
 # ADNI: mask 1+ noisy image 1 = 2 concatenated channels with with_condition=True
 in_channels = 2 if with_condition else 1 # mask + noise image when conditioned
-out_channels = 1 # different from BraTS where output has multiple channels, only one channel for ADNI dataset bc of single brain mask output (bc binary mask)
+out_channels = 1 # different from Brats where output has multiple channels, only one channel for ADNI dataset bc of single brain mask output (bc binary mask)
 
 # class_cond = True for ADNI dataset with conditioning on mask and diagnosis label
 model = create_model(
@@ -143,7 +146,7 @@ diffusion = GaussianDiffusion(
     image_size = input_size,
     depth_size = depth_size,
     timesteps = args.timesteps,   # number of steps
-    loss_type = 'l1',    # L1 or L2 # L1 = (1/n) * Σ|y_true — y_pred|
+    loss_type = args.loss_type,    # L1 or L2 # L1 = (1/n) * Σ|y_true — y_pred|
     with_condition=with_condition,
     channels=out_channels
 ).cuda()#to(device)
@@ -155,10 +158,10 @@ try:
         weight = torch.load(resume_weight, map_location='cuda')
         diffusion.load_state_dict(weight['ema'])
         initial_weights = resume_weight
-        print("Model Loaded!")
+        print(f"Model Loaded from {resume_weight}")
 
 except Exception as e:
-    print("NO WEIGHTS PRESENT")
+    print("No weight loaded, training from scratch")
 
 print("=== COMPREHENSIVE PIPELINE TEST ===")
 try:
@@ -197,9 +200,29 @@ except Exception as e:
     traceback.print_exc()
     exit(1)
 
+now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
+
+val_masks_folder = os.path.join(args.validationfolder, "mask/")
+val_images_folder = os.path.join(args.validationfolder, "image/")
+val_diagnosis_df = pd.read_csv(os.path.join(args.validationfolder, "diagnosis", "test_subjects.csv"))
+val_diagnosis_label = val_diagnosis_df['Diagnosis'].astype(int).tolist()    
+
+# Create validation dataset
+val_dataset = NiftiPairImageGenerator(
+    val_masks_folder, 
+    val_images_folder,
+    input_size=input_size,
+    depth_size=depth_size,
+    transform=transform,
+    target_transform=transform,
+    full_channel_mask=False,
+    diagnosis_label=val_diagnosis_label  # Load from CSV
+)
+
 trainer = Trainer(
     diffusion,
-    dataset, # supplies both input and target images and diagnosis labels if with_condition=True
+    dataset,
+    val_dataset=val_dataset,  # Add validation dataset
     image_size = input_size,
     depth_size = depth_size,
     train_batch_size = args.batchsize,
@@ -218,6 +241,7 @@ trainer = Trainer(
     #lr_plateau_factor = args.lr_plateau_factor,
     #lr_plateau_patience = args.lr_plateau_patience,
     lr_min = args.lr_min,
+    results_folder=f"./results/results_{now}"
 )
 
 trainer.train()

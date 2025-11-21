@@ -118,7 +118,7 @@ class GaussianDiffusion(nn.Module):
         depth_size,
         channels = 1,
         timesteps = 1000,
-        loss_type = 'l1',
+        loss_type = 'l1', # NOTE: l1 as per original but evaluate
         betas = None,
         with_condition = False,
         with_pairwised = False,
@@ -309,6 +309,7 @@ class Trainer(object):
         self,
         diffusion_model,
         dataset,
+        val_dataset=None,  # Add validation dataset parameter
         ema_decay = 0.995,
         image_size = 128,
         depth_size = 128,
@@ -350,6 +351,12 @@ class Trainer(object):
 
         self.ds = dataset
         self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, num_workers=4, pin_memory=True))
+        
+        # Add validation dataloader
+        self.val_ds = val_dataset
+        if self.val_ds is not None:
+            self.val_dl = data.DataLoader(self.val_ds, batch_size=train_batch_size, shuffle=False, num_workers=4, pin_memory=True)
+        
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
         self.lr_warmup_steps = lr_warmup_steps # number of warmup steps: LINEAR increase of lr
 
@@ -383,7 +390,7 @@ class Trainer(object):
 
     def wandb_log(self):
         #log with weights and biases 
-        now=datetime.datetime.now().strftime("%y-%m-%dT%H%M%S")
+        now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
         wandb.init(project="med-ddpm", name=f"{now} ",
                    config={
                        "epochs": self.train_num_steps,
@@ -411,15 +418,24 @@ class Trainer(object):
             return
         self.ema.update_model_average(self.ema_model, self.model)
 
-    def save(self, milestone):
+    def save(self, milestone, val_loss=None):
         data = {
             'step': self.step,
             'model': self.model.state_dict(),
-            'ema': self.ema_model.state_dict()
+            'ema': self.ema_model.state_dict(),
+            'optimizer': self.opt.state_dict(),  # Save optimizer state
+            'val_loss': val_loss,  # Save validation loss
+            'best_val_loss': self.best_val_loss,
+            'val_losses': self.val_losses  # Save history
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+        
+        # Save best model separately
+        if val_loss is not None and val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            torch.save(data, str(self.results_folder / 'model-best.pt'))
+            print(f"New best validation loss: {val_loss:.6f}")
 
-        # weights and biases: save model checkpoint
         wandb.save(str(self.results_folder / f'model-{milestone}.pt'))
 
     def load(self, milestone):
@@ -429,6 +445,36 @@ class Trainer(object):
         self.model.load_state_dict(data['model'])
         self.ema_model.load_state_dict(data['ema'])
 
+    def validate(self):
+        """Compute validation loss"""
+
+        if self.val_ds is None:
+            return None
+            
+        self.model.eval()
+        val_losses = []
+        
+        with torch.no_grad():
+            for batch_idx, data in enumerate(self.val_dl):
+                if self.with_condition:
+                    input_tensors = data['input'].cuda()
+                    target_tensors = data['target'].cuda()
+                    diagnosis = torch.tensor(data['diagnosis']).long().cuda()
+                    loss = self.model(target_tensors, condition_tensors=input_tensors, diagnosis=diagnosis)
+                else:
+                    data = data.cuda()
+                    loss = self.model(data)
+                
+                val_losses.append(loss.item())
+                
+                # Limit validation batches for speed
+                if batch_idx >= 50:  # Validate on first 50 batches
+                    break
+        
+        self.model.train()
+        avg_val_loss = np.mean(val_losses)
+        return avg_val_loss
+
     def train(self):
         backwards = partial(loss_backwards, self.fp16)
         start_time = time.time()
@@ -437,7 +483,7 @@ class Trainer(object):
             accumulated_loss = []
             for i in range(self.gradient_accumulate_every):
                 if self.with_condition:
-                    data = next(self.dl)
+                    data = next(self.dl) # pull batch = built-in-iterator
                     input_tensors = data['input'].cuda()
                     target_tensors = data['target'].cuda()
                     diagnosis = torch.tensor(data['diagnosis']).long().cuda()
@@ -470,6 +516,8 @@ class Trainer(object):
                 if self.step == self.lr_warmup_steps: # at the end of warmup, set lr to train_lr if not already reached
                     for param_group in self.opt.param_groups:
                         param_group['lr'] = self.train_lr
+                        print(f"LR warmup completed, current LR set: {current_lr}, step: {self.step}")
+                        print(f"Starting LR scheduler: CosineAnnealingLR with min LR: {self.lr_min}")
                 # Learning rate scheduler (CosineAnnealingLR): modifies learning rate based on cosine annealing
                 self.lr_scheduler.step() # no need for lr_min as already taken into account in CosineAnnealingLR
 
@@ -497,13 +545,21 @@ class Trainer(object):
             # Save model and sample images every save_and_sample_every steps
             if self.step != 0 and self.step % self.save_and_sample_every == 0:
                 milestone = self.step // self.save_and_sample_every
-                batches = num_to_groups(1, self.batch_size)
-                n = batches[0] # since we are sampling 1 image only
-
+                batches= num_to_groups(1, self.batch_size) # generate 1 sample image
+                n = batches[0]
+                
+                # Compute validation loss
+                val_loss = self.validate()
+                if val_loss is not None:
+                    self.val_losses.append(val_loss)
+                    print(f"Validation loss at step {self.step}: {val_loss:.6f}")
+                
                 if self.with_condition:
                     # added diagnosis condition
                     sample_condition = self.ds.sample_conditions(batch_size=n) # modified to return diagnosis along with condition_tensors
-                    sample_diagnosis = sample_condition.get('diagnosis', None)  # Extract diagnosis if available
+                    sample_diagnosis = sample_condition.get('diagnosis', None)  # Extract diagnosis if available 
+                    lab=sample_condition['diagnosis'].cpu().numpy()
+                    
                     all_images_list = list(map(lambda n: self.ema_model.sample(batch_size=n, condition_tensors=sample_condition['condition_tensors'], diagnosis=sample_diagnosis), batches)) # added diagnosis changes
                     all_images = torch.cat(all_images_list, dim=0)
                 else:
@@ -518,13 +574,24 @@ class Trainer(object):
                 assert sampleImage.shape == (self.image_size, self.image_size, self.depth_size)
                 #sampleImage=sampleImage.reshape([self.image_size, self.image_size, self.depth_size])
                 nifti_img = nib.Nifti1Image(sampleImage, affine=np.eye(4))
-                nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
+                if self.with_condition:
+                    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}-{lab}.nii.gz'))
+                else:
+                    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
 
                 #save central slice weights and biases
                 middle_slice=sampleImage[:, :, self.depth_size//2]
                 wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
                
-                self.save(milestone)
+                self.save(milestone, val_loss=val_loss)
+                
+                # Log validation loss to wandb
+                if val_loss is not None:
+                    wandb.log({
+                        "val_loss": val_loss,
+                        "best_val_loss": self.best_val_loss,
+                        "step": self.step
+                    })
 
             # Log training info to weights and biases
             wandb.log({"step": self.step,
@@ -538,4 +605,3 @@ class Trainer(object):
         end_time = time.time()
         execution_time = (end_time - start_time)/3600
         wandb.log({"execution_time_h": execution_time, "final_loss": average_loss})
-        
