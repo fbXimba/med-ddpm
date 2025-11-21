@@ -388,6 +388,10 @@ class Trainer(object):
         self.log = self.wandb_log()
         self.reset_parameters()
 
+        # Initialize validation tracking
+        self.val_losses = []
+        self.best_val_loss = float('inf')
+
     def wandb_log(self):
         #log with weights and biases 
         now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
