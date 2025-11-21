@@ -1,181 +1,207 @@
-# sample_ADNI.py
+# Generate AD=2 sample from a specific mask
+#python sample_ADNI.py \
+#    --checkpoint ./results/results_1/model-150.pt --condition_mask ../ADNI_split/ADNI_test_dataset/mask/941_S_1203_mask.nii.gz --diagnosis 2 --num_samples 1
+#    --output ./generated_AD.nii.gz
 
-# -*- coding:utf-8 -*-
+# Generate 10 samples from random test conditions
+#python sample_ADNI.py \
+#    --checkpoint ./results/results_1/model-150.pt --batch_sample --num_samples 10
 
-from diffusion_model.trainer_ADNI import GaussianDiffusion, num_to_groups
-from diffusion_model.unet_ADNI import create_model
-from torchvision.transforms import Compose, Lambda
-import nibabel as nib
-import torchio as tio
-import numpy as np
-import argparse
+#TODO: adjust direction!! sagittal, coronal and axial views are wrong on 3DSlicer
+
+import os 
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
+os.environ["CUDA_VISIBLE_DEVICES"]="1" # TODO: set specific GPU if multiple available
+
 import torch
-import os
-import glob
+import numpy as np
+import nibabel as nib
+from torchvision.transforms import Compose, Lambda
+from diffusion_model.trainer_ADNI import GaussianDiffusion
+from diffusion_model.unet_ADNI import create_model
+from dataset_ADNI import NiftiPairImageGenerator
+import argparse
+import pandas as pd
+import datetime
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+def load_trained_model(checkpoint_path, input_size=128, depth_size=128, num_channels=64, num_res_blocks=2, timesteps=250):
+    """Load the trained diffusion model"""
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-i", "--inputfolder", type=str, default="dataset/whole_head/mask")
-parser.add_argument("-e", "--exportfolder", type=str, default="exports/")
-parser.add_argument("--input_size", type=int, default=128)
-parser.add_argument("--depth_size", type=int, default=128)
-parser.add_argument("--num_channels", type=int, default=64)
-parser.add_argument("--num_res_blocks", type=int, default=1)
-parser.add_argument("--batchsize", type=int, default=1)
-parser.add_argument("--num_samples", type=int, default=1)
-parser.add_argument("--num_class_labels", type=int, default=3)
-parser.add_argument("--timesteps", type=int, default=250)
-parser.add_argument("--diagnosis", type=int, default=0, help="Diagnosis class: 0=CN, 1=MCI, 2=AD")
-parser.add_argument("-w", "--weightfile", type=str, default="model/model_128.pt")
-parser.add_argument('--with_condition', action='store_true', help='whether to use condition or not with semantic mask and diagnosis label')
+    # Create model architecture
+    model = create_model(
+        input_size, 
+        num_channels, 
+        num_res_blocks, 
+        class_cond=True,  # Enable class conditioning
+        in_channels=2,    # mask + noisy image
+        out_channels=1
+    ).cuda()
+    
+    # Create diffusion wrapper
+    diffusion = GaussianDiffusion(
+        model,
+        image_size=input_size,
+        depth_size=depth_size,
+        timesteps=timesteps,
+        loss_type='l1',
+        with_condition=True,
+        channels=1
+    ).cuda()
+    
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cuda')
+    diffusion.load_state_dict(checkpoint['ema'])  # Use EMA weights
+    print(checkpoint)
+    diffusion.eval()  # Set to evaluation mode to keep unchanged
+    
+    print(f"Model loaded from {checkpoint_path}")
+    print(f"Training step: {checkpoint.get('step', 'unknown')}")
+    
+    return diffusion
 
-args = parser.parse_args()
+def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, output_path, num_samples=1):
+    """
+    Sample images conditioned on a mask and diagnosis label
+    
+    Args:
+        diffusion: Trained GaussianDiffusion model
+        condition_mask_path: Path to condition mask (.nii.gz)
+        diagnosis_label: Diagnosis class (0=CN, 1=MCI, 2=AD)
+        output_path: Where to save generated image
+        num_samples: Number of samples to generate
+    """
 
-exportfolder = args.exportfolder
-inputfolder = args.inputfolder
-input_size = args.input_size
-depth_size = args.depth_size
-batchsize = args.batchsize
-weightfile = args.weightfile
-num_channels = args.num_channels
-num_res_blocks = args.num_res_blocks
-num_samples = args.num_samples
-with_condition = args.with_condition
-# Fixed: use correct input channels for trained model?
-in_channels = 2 if with_condition else 1  # concatenated noisy image + mask
-out_channels = 1
-device = "cuda"
-diagnosis_class = args.diagnosis
-
-mask_list = sorted(glob.glob(f"{inputfolder}/*.nii.gz"))
-print(f"Found {len(mask_list)} mask files")
-
-
-def read_image(file_path):
-    """Read and normalize image to [-1,1] like in training"""
-    img = nib.load(file_path).get_fdata()
-    # Assuming your masks are already preprocessed to [-1,1] like in training
-    # If not, uncomment the normalization below:
-    # img = (img - img.min()) / (img.max() - img.min())  # 0-1 first
-    # img = img * 2.0 - 1.0  # then to [-1,1]
-    return img
-
-
-def resize_img(input_img):
-    """Resize 3D image to target dimensions"""
-    if input_img.shape != (input_size, input_size, depth_size):
-        img = tio.ScalarImage(tensor=input_img[np.newaxis, ...])
-        resize_transform = tio.Resize((input_size, input_size, depth_size))
-        img = np.asarray(resize_transform(img))[0]
-        return img
-    return input_img
-
-
-# Simplified transform that matches training
-input_transform = Compose([ # Assuming images are already normalized to [-1,1]
+    # Load and preprocess condition mask
+    condition_img = nib.load(condition_mask_path).get_fdata()
+    
+    # Transform to tensor
+    transform = Compose([
         Lambda(lambda t: torch.tensor(t).float()),
-        Lambda(lambda t: t.unsqueeze(0)),  # Add channel dimension [H,W,D] -> [1,H,W,D]
+        Lambda(lambda t: t.unsqueeze(0))  # Add channel dimension
     ])
-
-# Create model with correct parameters
-model = create_model(
-    input_size,
-    num_channels,
-    num_res_blocks,
-    class_cond=True,  # Enable class conditioning
-    in_channels=in_channels,
-    #out_channels=out_channels,
-).cuda()
-
-diffusion = GaussianDiffusion(
-    model,
-    image_size=input_size,
-    depth_size=depth_size,
-    timesteps=args.timesteps,
-    loss_type="l1",  # Match training
-    with_condition=with_condition,
-    channels=out_channels
-).cuda()
-
-# Load trained weights
-checkpoint = torch.load(weightfile)
-diffusion.load_state_dict(checkpoint["ema"])
-print("Model Loaded!")
-
-# Create output directories
-img_dir = os.path.join(exportfolder, "image")
-msk_dir = os.path.join(exportfolder, "mask")
-os.makedirs(img_dir, exist_ok=True)
-os.makedirs(msk_dir, exist_ok=True)
-
-print(f"Generating samples with diagnosis class: {diagnosis_class} (0=CN, 1=MCI, 2=AD)")
-
-for k, inputfile in enumerate(mask_list): # iterate over all mask files
-    left = len(mask_list) - (k + 1)
-    print(f"Processing file {k + 1}/{len(mask_list)}, LEFT: {left}")
-
-    # Load and process mask
-    ref = nib.load(inputfile)
-    msk_name = inputfile.split("/")[-1]
-    refImg = ref.get_fdata()
-
-    # Process mask image
-    img = read_image(inputfile)  # Use the same read_image function as training
-    img = resize_img(img)
-    input_tensor = input_transform(img)  # Shape: [1, H, W, D]
-
-    # Sampling loop
-    batches = num_to_groups(num_samples, batchsize)
-    steps = len(batches)
-    sample_count = 0
-
-    print(f"All Steps: {steps}")
-    counter = 0 # to count saved samples
-
-    for i, bsize in enumerate(batches): # for each batch
-        print(f"Step [{i + 1}/{steps}]")
-        condition_tensors = []
-        diagnosis_labels = []
-        counted_samples = []
-
-        for b in range(bsize): # for each sample in the batch
-            condition_tensors.append(input_tensor)
-            diagnosis_labels.append(diagnosis_class)  # Use specified diagnosis
-            counted_samples.append(sample_count)
-            sample_count += 1
-
-        condition_tensors = torch.cat(condition_tensors, 0).cuda()
-        diagnosis_tensor = torch.tensor(diagnosis_labels).long().cuda()
-
-        # Sample with both mask and diagnosis conditioning
-        all_images_list = []
-        for n in [bsize]: # process the whole batch at once
-            samples = diffusion.sample( # sample function in trainer_ADNI.py
-                batch_size=n,
-                condition_tensors=condition_tensors,
-                diagnosis=diagnosis_tensor,
+    
+    condition_tensor = transform(condition_img).unsqueeze(0).cuda()  # [1, 1, H, W, D]
+    
+    # Create diagnosis tensor
+    diagnosis_tensor = torch.tensor([diagnosis_label]).long().cuda()  # [1]
+    
+    print(f"Condition mask shape: {condition_tensor.shape}")
+    print(f"Diagnosis label: {diagnosis_label}")
+    
+    # Generate samples
+    with torch.no_grad():
+        for i in range(num_samples):
+            print(f"Generating sample {i+1}/{num_samples}...")
+            
+            generated = diffusion.sample( # function in trainer Gaussian diffusion class
+                batch_size=1,
+                condition_tensors=condition_tensor,
+                diagnosis=diagnosis_tensor
             )
-            all_images_list.append(samples)
+            
+            # Convert to numpy and save
+            sample_img = generated.cpu().numpy()[0, 0]  # [H, W, D]
+            
+            # Save as NIfTI
+            #mask_file=os.path.basename(condition_mask_path)
+            nifti_img = nib.Nifti1Image(sample_img, affine=np.eye(4))
+            save_path_img = os.path.join(output_path, f'_sample{i+1}_{diagnosis_label}.nii.gz')
+            save_path = os.path.join(output_path, f'_sample{i+1}.nii.gz')
+            nib.save(nifti_img, save_path_img)
+            #nib.save(condition_img, save_path) #?
+            print(f"Saved to {save_path_img}")
 
-        all_images = torch.cat(all_images_list, dim=0)
-        sampleImages = all_images.cpu().numpy()
+def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder='./samples'):
+    """Sample from multiple conditions in the dataset"""
 
-        for b, c in enumerate(counted_samples): # save each sample in the batch
-            counter = counter + 1
-            sampleImage = sampleImages[b][0]  # Remove batch and channel dims
+    # Sample random conditions from dataset
+    sample_conditions = dataset.sample_conditions(batch_size=num_samples) # function from dataset NiftiPairImageGenerator class
+    condition_tensors = sample_conditions['condition_tensors']
+    diagnosis_labels = sample_conditions['diagnosis']
+    
+    print(f"Generating {num_samples} samples...")
+    
+    with torch.no_grad():
+        generated = diffusion.sample(
+            batch_size=num_samples,
+            condition_tensors=condition_tensors,
+            diagnosis=diagnosis_labels
+        )
+    
+    # Save each sample
+    for i in range(num_samples):
+        folder=os.path.join(output_folder, f"{i+1}")
+        os.makedirs(folder, exist_ok=True)
 
-            # Ensure correct shape matching reference
-            sampleImage = sampleImage.reshape(refImg.shape)
+        sample_img = generated[i, 0].cpu().numpy()  # [H, W, D]
+        diagnosis = diagnosis_labels[i].item()
+        
+        nifti_img = nib.Nifti1Image(sample_img, affine=np.eye(4))
+        save_path = os.path.join(folder, f'sample_{i+1}_diagnosis{diagnosis}.nii.gz')
+        save_path_mask = os.path.join(folder, f'sample_{i+1}.nii.gz')
+        nib.save(nifti_img, save_path)
+        #nib.save(condition_tensors[i].item, save_path_mask)
+        print(f"Saved sample {i+1} with diagnosis {diagnosis}")
 
-            # Create and save NIfTI image
-            nifti_img = nib.Nifti1Image(sampleImage, affine=ref.affine)
-            output_name = f"{counter}_{diagnosis_class}_{msk_name}"
-            nib.save(nifti_img, os.path.join(img_dir, output_name))
-            nib.save(ref, os.path.join(msk_dir, output_name))
+if __name__ == "__main__":
+    now=datetime.datetime.now().strftime("%y-%m-%dT%H:%M:%S")
 
-        torch.cuda.empty_cache()
-    print("OK!")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--checkpoint', type=str, default="./results/results_1/model-199.pt", help='Path to model checkpoint')
+    parser.add_argument('--condition_mask', type=str, help='Path to condition mask')
+    parser.add_argument('--diagnosis', type=int, default=0, help='Diagnosis label (0=CN, 1=MCI, 2=AD)')
+    parser.add_argument('--output', type=str, default=f'./generated_sample/{now}')
+    parser.add_argument('--num_samples', type=int, default=1)
+    parser.add_argument('--batch_sample', action='store_true', help='Sample from dataset conditions')
+    parser.add_argument('--input_folder', type=str, default="../ADNI_split/ADNI_test_dataset/mask/")
+    parser.add_argument('--target_folder', type=str, default="../ADNI_split/ADNI_test_dataset/image/")
+    parser.add_argument('--timesteps', type=int, default=250) #NOTE: seen decreasing: CAN'T use diffrent one from training
+    args = parser.parse_args()
+    
+    # Load model
+    diffusion = load_trained_model(args.checkpoint,timesteps=args.timesteps)
 
-print("Sampling completed!")
+    os.makedirs(args.output, exist_ok=True)
+    
+    if args.batch_sample:
+        # batch sampling 
+        # Load test dataset
+        transform = Compose([ # TODO: messed up?
+            Lambda(lambda t: torch.tensor(t).float()),
+            Lambda(lambda t: t.unsqueeze(0))
+        ])
+        
+        diagnosis_df = pd.read_csv("../ADNI_split/ADNI_test_dataset/diagnosis/test_subjects.csv")
+        diagnosis_labels = diagnosis_df['Diagnosis'].astype(int).tolist()
+        
+        dataset = NiftiPairImageGenerator(
+            args.input_folder,
+            args.target_folder,
+            input_size=128,
+            depth_size=128,
+            transform=transform,
+            target_transform=transform,
+            full_channel_mask=False,
+            diagnosis_label=diagnosis_labels
+        )
+        
+        batch_sample_from_dataset(
+            diffusion,
+            dataset, 
+            num_samples=args.num_samples, 
+            output_folder=args.output
+        )
+
+    else:
+        # Single condition sampling
+        print(f"Sampling from mask: {args.condition_mask} with diagnosis: {args.diagnosis}")
+        if not args.condition_mask:
+            raise ValueError("--condition_mask required for single sampling")
+        
+        sample_from_condition(
+            diffusion,
+            args.condition_mask,
+            args.diagnosis,
+            args.output,
+            args.num_samples
+        )
