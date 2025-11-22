@@ -326,11 +326,9 @@ class Trainer(object):
         with_condition = False,
         with_pairwised = False,
         lr_warmup_steps = 5000,  # warmup steps: LINEAR increase
-        ## exp lr scheduler parameters
         #lr_decay_rate = 0.9999,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
-        ## plateau lr scheduler parameters
-        #lr_plateau_factor = 0.5,
-        #lr_plateau_patience = 500,
+        #lr_plateau_factor = 0.5, # factor for ReduceLROnPlateau
+        #lr_plateau_patience = 500, # patience for ReduceLROnPlateau
         lr_min = 2e-7,
         ):
         super().__init__()
@@ -391,26 +389,33 @@ class Trainer(object):
         # Initialize validation tracking
         self.val_losses = []
         self.best_val_loss = float('inf')
+        self.best_milestone = None  # Track which checkpoint is best
 
     def wandb_log(self):
         #log with weights and biases 
         now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
         wandb.init(project="med-ddpm", name=f"{now} ",
                    config={
-                       "epochs": self.train_num_steps,
-                       "learning_rate": self.train_lr,
-                       "lr_warmup_steps": self.lr_warmup_steps,
-                       #"lr_decay_rate": self.lr_decay_rate,
-                       "lr_min": self.lr_min,
-                       "batch_size" : self.batch_size,
-                       "image_size" : self.image_size,
-                       "steps" : self.train_num_steps,
-                       "update_ema_every" : self.update_ema_every,
-                       "gradient_accumulate_every": self.gradient_accumulate_every,
-                       "sample_every" : self.save_and_sample_every,
-                       "initial_weights" :self.initial_weights
+                        "epochs": self.train_num_steps,
+                        "learning_rate": self.train_lr,
+                        "lr_warmup_steps": self.lr_warmup_steps,
+                        #"lr_decay_rate": self.lr_decay_rate,
+                        "lr_min": self.lr_min,
+                        "batch_size" : self.batch_size,
+                        "image_size" : self.image_size,
+                        "steps" : self.train_num_steps,
+                        "update_ema_every" : self.update_ema_every,
+                        "gradient_accumulate_every": self.gradient_accumulate_every,
+                        "sample_every" : self.save_and_sample_every,
+                        "initial_weights" :self.initial_weights
 
-                       })
+                        },
+                        settings=wandb.Settings(
+                            code_saving=False,          # <— disables code uploads
+                            _disable_stats=True,        # <— disables system metrics (GPU/RAM/CPU)
+                            filesystem=False            # <— disables auto file uploads
+                        )
+                )
 
 
     def reset_parameters(self):
@@ -430,17 +435,17 @@ class Trainer(object):
             'optimizer': self.opt.state_dict(),  # Save optimizer state
             'val_loss': val_loss,  # Save validation loss
             'best_val_loss': self.best_val_loss,
-            'val_losses': self.val_losses  # Save history
+            'best_milestone': self.best_milestone,
+            'val_losses': self.val_losses
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
         
         # Save best model separately
         if val_loss is not None and val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
+            self.best_milestone = milestone  # Track best checkpoint
             torch.save(data, str(self.results_folder / 'model-best.pt'))
-            print(f"New best validation loss: {val_loss:.6f}")
-
-        wandb.save(str(self.results_folder / f'model-{milestone}.pt'))
+            print(f"New best: milestone {milestone}, val_loss: {val_loss:.6f}")
 
     def load(self, milestone):
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'))
@@ -525,19 +530,6 @@ class Trainer(object):
                 # Learning rate scheduler (CosineAnnealingLR): modifies learning rate based on cosine annealing
                 self.lr_scheduler.step() # no need for lr_min as already taken into account in CosineAnnealingLR
 
-            #elif self.step >= self.lr_warmup_steps and current_lr > self.lr_min: # after fixed number of steps = warmup but less than min lr
-            #    # Ensure lr is set to train_lr at the end of warmup
-            #    if self.step == self.lr_warmup_steps: # at the end of warmup, set lr to train_lr if not already reached
-            #        for param_group in self.opt.param_groups:
-            #            param_group['lr'] = self.train_lr
-            #    # Learning rate scheduler (ExponentialLR) 
-            #    self.lr_scheduler.step() # modifies learning rate based on exponential decay term
-            #else:
-            #    continue  # maintain minimum learning rate
-
-            # else:
-            # Learning rate reduction on plateau #look at factor and patience values
-            #self.lr_plateau_scheduler.step(average_loss) # modifies learning rate based on plateau of average loss
 
             # Get current learning rate because of warmup + decay implementation
             current_lr = self.opt.param_groups[0]['lr'] # get current learning rate: takes into account decay if any
@@ -557,6 +549,9 @@ class Trainer(object):
                 if val_loss is not None:
                     self.val_losses.append(val_loss)
                     print(f"Validation loss at step {self.step}: {val_loss:.6f}")
+
+                # Save checkpoint (updates best_val_loss internally)
+                self.save(milestone, val_loss=val_loss)
                 
                 if self.with_condition:
                     # added diagnosis condition
@@ -587,8 +582,6 @@ class Trainer(object):
                 middle_slice=sampleImage[:, :, self.depth_size//2]
                 wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
                
-                self.save(milestone, val_loss=val_loss)
-                
                 # Log validation loss to wandb
                 if val_loss is not None:
                     wandb.log({
@@ -606,6 +599,13 @@ class Trainer(object):
             self.step += 1
 
         print('training completed')
+        
+        # Upload final best model once
+        if self.best_milestone is not None:
+            wandb.save(str(self.results_folder / 'model-best.pt'))
+            wandb.log({"best_milestone": self.best_milestone, "best_val_loss": self.best_val_loss})
+            print(f"Best model uploaded: milestone {self.best_milestone}, loss: {self.best_val_loss:.6f}")
+        
         end_time = time.time()
         execution_time = (end_time - start_time)/3600
         wandb.log({"execution_time_h": execution_time, "final_loss": average_loss})

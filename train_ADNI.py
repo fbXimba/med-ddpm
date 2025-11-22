@@ -23,6 +23,9 @@ import datetime
 #device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"CUDA AVAILABLE: {torch.cuda.is_available}")
 
+os.environ["WANDB_DISABLE_CODE"] = "true"          # no code snapshot
+os.environ["WANDB__SERVICE_WAIT"] = "0"            # no system metrics (gpu/cpu logs)
+os.environ["WANDB_WATCH"] = "false"                # no model graph logging
 # -
 
 # Load WandB key from yaml
