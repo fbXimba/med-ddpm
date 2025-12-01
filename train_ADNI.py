@@ -14,7 +14,6 @@ from dataset_ADNI import NiftiImageGenerator, NiftiPairImageGenerator
 import argparse
 import torch
 import pandas as pd
-import json
 import yaml
 import wandb
 import datetime
@@ -37,7 +36,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--inputfolder', type=str, default="../ADNI_split/ADNI_train_dataset/mask/")
 parser.add_argument('-t', '--targetfolder', type=str, default="../ADNI_split/ADNI_train_dataset/image/")
 parser.add_argument('-d', '--diagnosisfolder', type=str, default="../ADNI_split/ADNI_train_dataset/diagnosis/")
-parser.add_argument('--validationfolder', type=str, default="../ADNI_split/ADNI_test_dataset/")
+parser.add_argument('--validationfolder', type=str, default="../ADNI_split/ADNI_validation_dataset/")
 parser.add_argument('--key', type=str, default=key ,help="Weights and Biases key for logging")
 parser.add_argument('--input_size', type=int, default=128) # already for preprocessed ADNI
 parser.add_argument('--depth_size', type=int, default=128) # already for preprocessed ADNI
@@ -56,7 +55,7 @@ parser.add_argument('--batchsize', type=int, default=1)
 parser.add_argument('--epochs', type=int, default=200000) # epochs parameter specifies the number of training iterations # ex 50000
 parser.add_argument('--timesteps', type=int, default=250)
 parser.add_argument('--save_and_sample_every', type=int, default=1000)
-parser.add_argument('--loss_type', type=str, default="l2")
+parser.add_argument('--loss_type', type=str, default="l1_l2")
 parser.add_argument('--with_condition', action='store_true', help='whether to use condition or not with semantic mask and diagnosis label')
 parser.add_argument('-r', '--resume_weight', type=str, default="model/model_128.pt")
 
@@ -149,7 +148,7 @@ diffusion = GaussianDiffusion(
     image_size = input_size,
     depth_size = depth_size,
     timesteps = args.timesteps,   # number of steps
-    loss_type = args.loss_type,    # L1 or L2 # L1 = (1/n) * Σ|y_true — y_pred|
+    loss_type = args.loss_type,    # L1 or L2 # L1=(1/n)*Σ|y_true—y_pred|, L2=(1/n)*Σ(y_true—y_pred)²
     with_condition=with_condition,
     channels=out_channels
 ).cuda()#to(device)

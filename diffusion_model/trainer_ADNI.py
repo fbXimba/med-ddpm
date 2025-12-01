@@ -13,9 +13,9 @@ from functools import partial
 from torch.utils import data
 from pathlib import Path
 from torch.optim import Adam
-from torch.optim.lr_scheduler import ExponentialLR # learning rate exponential scheduler
+#from torch.optim.lr_scheduler import ExponentialLR # learning rate exponential scheduler
 from torch.optim.lr_scheduler import CosineAnnealingLR # learning rate cosine annealing scheduler
-from torch.optim.lr_scheduler import ReduceLROnPlateau # learning rate reduction on plateau
+#from torch.optim.lr_scheduler import ReduceLROnPlateau # learning rate reduction on plateau
 from torchvision import transforms, utils
 from PIL import Image
 import nibabel as nib
@@ -290,6 +290,10 @@ class GaussianDiffusion(nn.Module):
             loss = (noise - x_recon).abs().mean()
         elif self.loss_type == 'l2':
             loss = F.mse_loss(x_recon, noise)
+        elif self.loss_type == 'l1_l2':
+            loss_l1 = (noise - x_recon).abs().mean()
+            loss_l2 = F.mse_loss(x_recon, noise)
+            loss = 0.3 * loss_l1 + 0.7 * loss_l2 # weighted sum coffincients to evaluate
         else:
             raise NotImplementedError()
 
@@ -411,9 +415,9 @@ class Trainer(object):
 
                         },
                         settings=wandb.Settings(
-                            code_saving=False,          # <— disables code uploads
-                            _disable_stats=True,        # <— disables system metrics (GPU/RAM/CPU)
-                            filesystem=False            # <— disables auto file uploads
+                            code_saving=False,          # disables code uploads
+                            _disable_stats=True,        # disables system metrics (GPU/RAM/CPU)
+                            filesystem=False            # disables auto file uploads
                         )
                 )
 
