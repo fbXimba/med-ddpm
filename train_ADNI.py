@@ -23,7 +23,6 @@ import datetime
 print(f"CUDA AVAILABLE: {torch.cuda.is_available}")
 
 os.environ["WANDB_DISABLE_CODE"] = "true"          # no code snapshot
-os.environ["WANDB__SERVICE_WAIT"] = "0"            # no system metrics (gpu/cpu logs)
 os.environ["WANDB_WATCH"] = "false"                # no model graph logging
 # -
 
@@ -127,6 +126,7 @@ except Exception as e:
 check_points = args.epochs//save_and_sample_every
 
 print(f"Number of checkpoints: {check_points}")
+print(f"loss type: {args.loss_type}")
 
 # Define model
 # ADNI: mask 1+ noisy image 1 = 2 concatenated channels with with_condition=True
@@ -206,7 +206,7 @@ now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
 
 val_masks_folder = os.path.join(args.validationfolder, "mask/")
 val_images_folder = os.path.join(args.validationfolder, "image/")
-val_diagnosis_df = pd.read_csv(os.path.join(args.validationfolder, "diagnosis", "test_subjects.csv"))
+val_diagnosis_df = pd.read_csv(os.path.join(args.validationfolder, "diagnosis", "validation_subjects.csv"))
 val_diagnosis_label = val_diagnosis_df['Diagnosis'].astype(int).tolist()    
 
 # Create validation dataset

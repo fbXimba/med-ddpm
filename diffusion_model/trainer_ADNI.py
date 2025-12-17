@@ -412,13 +412,7 @@ class Trainer(object):
                         "gradient_accumulate_every": self.gradient_accumulate_every,
                         "sample_every" : self.save_and_sample_every,
                         "initial_weights" :self.initial_weights
-
-                        },
-                        settings=wandb.Settings(
-                            code_saving=False,          # disables code uploads
-                            _disable_stats=True,        # disables system metrics (GPU/RAM/CPU)
-                            filesystem=False            # disables auto file uploads
-                        )
+                        }
                 )
 
 
