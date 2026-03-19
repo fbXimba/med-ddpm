@@ -202,7 +202,7 @@ except Exception as e:
     traceback.print_exc()
     exit(1)
 
-now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
+now=datetime.datetime.now().strftime("%y%m%d_%H%M%S")
 
 val_masks_folder = os.path.join(args.validationfolder, "mask/")
 val_images_folder = os.path.join(args.validationfolder, "image/")
@@ -210,7 +210,7 @@ val_diagnosis_df = pd.read_csv(os.path.join(args.validationfolder, "diagnosis", 
 val_diagnosis_label = val_diagnosis_df['Diagnosis'].astype(int).tolist()    
 
 # Create validation dataset
-val_dataset = NiftiPairImageGenerator(
+val_dataset = NiftiPairImageGenerator( # careful: no option without condition
     val_masks_folder, 
     val_images_folder,
     input_size=input_size,

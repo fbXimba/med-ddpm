@@ -197,6 +197,7 @@ class NiftiPairImageGenerator(Dataset):
         return {
             "condition_tensors": torch.cat(input_tensors, 0).cuda(),
             "diagnosis": torch.tensor(diagnosis_labels).long().cuda(),
+            "indexes": indexes,
         }
 
     # Get length of dataset

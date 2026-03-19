@@ -392,7 +392,9 @@ class Trainer(object):
 
         # Initialize validation tracking
         self.val_losses = []
+        self.ema_val_losses = []
         self.best_val_loss = float('inf')
+        self.best_ema_val_loss = float('inf')
         self.best_milestone = None  # Track which checkpoint is best
 
     def wandb_log(self):
@@ -416,7 +418,7 @@ class Trainer(object):
                 )
 
 
-    def reset_parameters(self):
+    def reset_parameters(self): # 
         self.ema_model.load_state_dict(self.model.state_dict())
 
     def step_ema(self):
@@ -425,25 +427,44 @@ class Trainer(object):
             return
         self.ema.update_model_average(self.ema_model, self.model)
 
-    def save(self, milestone, val_loss=None):
+    def save(self, milestone, val_loss=None, ema_val_loss=None):
+
+        # Update best metrics
+        if val_loss is not None and val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+        if ema_val_loss is not None and ema_val_loss < self.best_ema_val_loss:
+            self.best_ema_val_loss = ema_val_loss
+
+        # Best checkpoint selection: prefer EMA metric when available
+        is_best = False
+        if ema_val_loss is not None and ema_val_loss < self.best_ema_val_loss:
+            self.best_milestone = milestone
+            is_best = True
+        elif val_loss is not None and val_loss < self.best_val_loss:
+            self.best_milestone = milestone
+            is_best = True
+
         data = {
             'step': self.step,
             'model': self.model.state_dict(),
             'ema': self.ema_model.state_dict(),
             'optimizer': self.opt.state_dict(),  # Save optimizer state
             'val_loss': val_loss,  # Save validation loss
+            'ema_val_loss': ema_val_loss,  # Save EMA validation loss
             'best_val_loss': self.best_val_loss,
+            'best_ema_val_loss': self.best_ema_val_loss,
             'best_milestone': self.best_milestone,
             'val_losses': self.val_losses
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
         
         # Save best model separately
-        if val_loss is not None and val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            self.best_milestone = milestone  # Track best checkpoint
+        if is_best:
             torch.save(data, str(self.results_folder / 'model-best.pt'))
-            print(f"New best: milestone {milestone}, val_loss: {val_loss:.6f}")
+            if ema_val_loss is not None and ema_val_loss < self.best_ema_val_loss:
+                print(f"New best: milestone {milestone}, ema_val_loss: {ema_val_loss:.6f}")
+            else:
+                print(f"New best: milestone {milestone}, val_loss: {val_loss:.6f}")
 
     def load(self, milestone):
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'))
@@ -452,6 +473,7 @@ class Trainer(object):
         self.model.load_state_dict(data['model'])
         self.ema_model.load_state_dict(data['ema'])
 
+    @torch.inference_mode()
     def validate(self):
         """Compute validation loss"""
 
@@ -475,14 +497,44 @@ class Trainer(object):
                 val_losses.append(loss.item())
                 
                 # Limit validation batches for speed
-                if batch_idx >= 50:  # Validate on first 50 batches
+                if batch_idx >= 49:  # Validate on first 50 batches
                     break
         
-        self.model.train()
+        avg_val_loss = np.mean(val_losses)
+        return avg_val_loss
+    
+    @torch.inference_mode()
+    def validate_ema(self):
+        """Compute validation loss"""
+        if self.val_ds is None:
+            return None
+
+        self.ema_model.eval()
+        val_losses = []
+
+        with torch.no_grad():
+            for batch_idx, data in enumerate(self.val_dl):
+                if self.with_condition:
+                    input_tensors = data['input'].cuda()
+                    target_tensors = data['target'].cuda()
+                    diagnosis = torch.tensor(data['diagnosis']).long().cuda()
+                    loss = self.ema_model(target_tensors, condition_tensors=input_tensors, diagnosis=diagnosis)
+                else:
+                    data = data.cuda()
+                    loss = self.ema_model(data)
+
+                val_losses.append(loss.item())
+
+                # Limit validation batches for speed
+                if batch_idx >= 49:  # Validate on first 50 batches
+                    break
+                
         avg_val_loss = np.mean(val_losses)
         return avg_val_loss
 
     def train(self):
+        """Train the model"""
+        
         backwards = partial(loss_backwards, self.fp16)
         start_time = time.time()
 
@@ -548,8 +600,13 @@ class Trainer(object):
                     self.val_losses.append(val_loss)
                     print(f"Validation loss at step {self.step}: {val_loss:.6f}")
 
+                ema_val_loss = self.validate_ema()
+                if ema_val_loss is not None:
+                    self.ema_val_losses.append(ema_val_loss)
+                    print(f"EMA model validation loss at step {self.step}: {ema_val_loss:.6f}")
+
                 # Save checkpoint (updates best_val_loss internally)
-                self.save(milestone, val_loss=val_loss)
+                self.save(milestone, val_loss=val_loss, ema_val_loss=ema_val_loss)
                 
                 if self.with_condition:
                     # added diagnosis condition
@@ -570,7 +627,16 @@ class Trainer(object):
                 # Shape should already be (128, 128, 128) - no reshape needed
                 assert sampleImage.shape == (self.image_size, self.image_size, self.depth_size)
                 #sampleImage=sampleImage.reshape([self.image_size, self.image_size, self.depth_size])
-                nifti_img = nib.Nifti1Image(sampleImage, affine=np.eye(4))
+                
+                # Use affine from training dataset for correct orientation when saving
+                if self.with_condition and hasattr(self.ds, 'pair_files'): # check if NiftiPairImageGenerator class (self.ds=object) has pair_files attribute (it should)
+                    # Get affine from first training sample (all ADNI preprocessed images have same affine)
+                    input_file = self.ds.pair_files[0][0]
+                    affine = nib.load(input_file).affine
+                else:
+                    affine = np.eye(4)  # Fallback to identity if not conditional
+                    
+                nifti_img = nib.Nifti1Image(sampleImage, affine=affine)
                 if self.with_condition:
                     nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}-{lab}.nii.gz'))
                 else:
@@ -584,9 +650,15 @@ class Trainer(object):
                 if val_loss is not None:
                     wandb.log({
                         "val_loss": val_loss,
+                        "ema_val_loss": ema_val_loss,
                         "best_val_loss": self.best_val_loss,
+                        "best_ema_val_loss": self.best_ema_val_loss,
                         "step": self.step
                     })
+
+                # Back to trining mode
+                self.model.train()
+                self.ema_model.train()
 
             # Log training info to weights and biases
             wandb.log({"step": self.step,

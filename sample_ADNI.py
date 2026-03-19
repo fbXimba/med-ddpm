@@ -72,7 +72,9 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
     """
 
     # Load and preprocess condition mask
-    condition_img = nib.load(condition_mask_path).get_fdata()
+    condition_nifti = nib.load(condition_mask_path)
+    condition_img = condition_nifti.get_fdata()
+    original_affine = condition_nifti.affine  # Preserve affine for correct orientation
     
     # Transform to tensor
     transform = Compose([
@@ -102,13 +104,10 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
             # Convert to numpy and save
             sample_img = generated.cpu().numpy()[0, 0]  # [H, W, D]
             
-            # Save as NIfTI
-            #mask_file=os.path.basename(condition_mask_path)
-            nifti_img = nib.Nifti1Image(sample_img, affine=np.eye(4))
-            save_path_img = os.path.join(output_path, f'_sample{i+1}_{diagnosis_label}.nii.gz')
-            save_path = os.path.join(output_path, f'_sample{i+1}.nii.gz')
+            # Save as NIfTI with correct affine transformation
+            nifti_img = nib.Nifti1Image(sample_img, affine=original_affine) # affine from mask file
+            save_path_img = os.path.join(output_path, f'sample_{i+1}_d{diagnosis_label}.nii.gz')
             nib.save(nifti_img, save_path_img)
-            #nib.save(condition_img, save_path) #?
             print(f"Saved to {save_path_img}")
 
 def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder='./samples'):
@@ -118,6 +117,14 @@ def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder=
     sample_conditions = dataset.sample_conditions(batch_size=num_samples) # function from dataset NiftiPairImageGenerator class
     condition_tensors = sample_conditions['condition_tensors']
     diagnosis_labels = sample_conditions['diagnosis']
+    indexes = sample_conditions['indexes']  # Use the same indexes that were sampled
+    
+    # Get affine matrices from the actual files
+    affine_matrices = []
+    for idx in indexes:
+        input_file = dataset.pair_files[idx][0]
+        affine = nib.load(input_file).affine
+        affine_matrices.append(affine)
     
     print(f"Generating {num_samples} samples...")
     
@@ -136,11 +143,11 @@ def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder=
         sample_img = generated[i, 0].cpu().numpy()  # [H, W, D]
         diagnosis = diagnosis_labels[i].item()
         
-        nifti_img = nib.Nifti1Image(sample_img, affine=np.eye(4))
+        # Use affine from original file for correct orientation
+        affine = affine_matrices[i] # get corresponding affine from condition file
+        nifti_img = nib.Nifti1Image(sample_img, affine=affine)
         save_path = os.path.join(folder, f'sample_{i+1}_diagnosis{diagnosis}.nii.gz')
-        save_path_mask = os.path.join(folder, f'sample_{i+1}.nii.gz')
         nib.save(nifti_img, save_path)
-        #nib.save(condition_tensors[i].item, save_path_mask)
         print(f"Saved sample {i+1} with diagnosis {diagnosis}")
 
 if __name__ == "__main__":
