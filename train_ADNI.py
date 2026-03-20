@@ -32,10 +32,10 @@ with open("key.yaml") as file:
 key=config["wandb"]["key"]
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--inputfolder', type=str, default="../ADNI_split/ADNI_train_dataset/mask/")
-parser.add_argument('-t', '--targetfolder', type=str, default="../ADNI_split/ADNI_train_dataset/image/")
-parser.add_argument('-d', '--diagnosisfolder', type=str, default="../ADNI_split/ADNI_train_dataset/diagnosis/")
-parser.add_argument('--validationfolder', type=str, default="../ADNI_split/ADNI_validation_dataset/")
+parser.add_argument('-i', '--inputfolder', type=str, default="../head_datasets/ADNI_train_dataset/mask/")
+parser.add_argument('-t', '--targetfolder', type=str, default="../head_datasets/ADNI_train_dataset/image/")
+parser.add_argument('-d', '--diagnosisfolder', type=str, default="../head_datasets/ADNI_train_dataset/diagnosis/")
+parser.add_argument('--validationfolder', type=str, default="../head_datasets/ADNI_validation_dataset/")
 parser.add_argument('--key', type=str, default=key ,help="Weights and Biases key for logging")
 parser.add_argument('--input_size', type=int, default=128) # already for preprocessed ADNI
 parser.add_argument('--depth_size', type=int, default=128) # already for preprocessed ADNI

@@ -11,7 +11,7 @@
 
 import os 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
-os.environ["CUDA_VISIBLE_DEVICES"]="1" # TODO: set specific GPU if multiple available
+os.environ["CUDA_VISIBLE_DEVICES"]="0" # TODO: set specific GPU if multiple available
 
 import torch
 import numpy as np
@@ -49,9 +49,9 @@ def load_trained_model(checkpoint_path, input_size=128, depth_size=128, num_chan
     ).cuda()
     
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cuda')
+    checkpoint = torch.load(checkpoint_path, map_location='cuda', weights_only=False)
     diffusion.load_state_dict(checkpoint['ema'])  # Use EMA weights
-    print(checkpoint)
+    #print(checkpoint)
     diffusion.eval()  # Set to evaluation mode to keep unchanged
     
     print(f"Model loaded from {checkpoint_path}")
@@ -154,14 +154,15 @@ if __name__ == "__main__":
     now=datetime.datetime.now().strftime("%y-%m-%dT%H:%M:%S")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default="./results/results_1/model-199.pt", help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', type=str, default="./results/results_25-12-01-T16:55:58/model-118.pt", help='Path to model checkpoint')
+    parser.add_argument('--diagnosis_csv', type=str, default="../brain_datasets/ADNI_test_dataset/diagnosis/test_subjects.csv", help='Path to diagnosis CSV file (for batch sampling)')
     parser.add_argument('--condition_mask', type=str, help='Path to condition mask')
-    parser.add_argument('--diagnosis', type=int, default=0, help='Diagnosis label (0=CN, 1=MCI, 2=AD)')
+    parser.add_argument('--diagnosis', type=int, default=2, help='Diagnosis label (0=CN, 1=MCI, 2=AD)')
     parser.add_argument('--output', type=str, default=f'./generated_sample/{now}')
     parser.add_argument('--num_samples', type=int, default=1)
     parser.add_argument('--batch_sample', action='store_true', help='Sample from dataset conditions')
-    parser.add_argument('--input_folder', type=str, default="../ADNI_split/ADNI_test_dataset/mask/")
-    parser.add_argument('--target_folder', type=str, default="../ADNI_split/ADNI_test_dataset/image/")
+    parser.add_argument('--input_folder', type=str, default="../brain_datasets/ADNI_test_dataset/mask/")
+    parser.add_argument('--target_folder', type=str, default="../brain_datasets/ADNI_test_dataset/image/")
     parser.add_argument('--timesteps', type=int, default=250) #NOTE: seen decreasing: CAN'T use diffrent one from training
     args = parser.parse_args()
     
@@ -171,6 +172,9 @@ if __name__ == "__main__":
     os.makedirs(args.output, exist_ok=True)
     
     if args.batch_sample:
+
+        print("Batch sampling mode: sampling from random masks and conditions in the dataset...")
+
         # batch sampling 
         # Load test dataset
         transform = Compose([ # TODO: messed up?

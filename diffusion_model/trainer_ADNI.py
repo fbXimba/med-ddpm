@@ -399,7 +399,7 @@ class Trainer(object):
 
     def wandb_log(self):
         #log with weights and biases 
-        now=datetime.datetime.now().strftime("%y-%m-%d-T%H:%M:%S")
+        now=datetime.datetime.now().strftime("%y%m%d_%H%M%S")
         wandb.init(project="med-ddpm", name=f"{now} ",
                    config={
                         "epochs": self.train_num_steps,
