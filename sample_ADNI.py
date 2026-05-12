@@ -57,9 +57,8 @@ def load_trained_model(checkpoint_path, input_size=128, depth_size=128, num_chan
     ).cuda()
     
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cuda')
+    checkpoint = torch.load(checkpoint_path, map_location='cuda', weights_only=False)
     diffusion.load_state_dict(checkpoint['ema'])  # Use EMA weights
-    print(checkpoint)
     diffusion.eval()  # Set to evaluation mode to keep unchanged
     
     print(f"Model loaded from {checkpoint_path}")
