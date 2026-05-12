@@ -20,6 +20,6 @@ dataset:
   info_masks: "../head_datasets/ADNI_test_dataset/diagnosis/test_subjects.csv"
   masks: "../head_datasets/ADNI_test_dataset/mask"
   data_len: 60 # for all
-  seed: 36
+  seed: 42
   num_samples: 1
   run: "260320_095902"

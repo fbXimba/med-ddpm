@@ -1,6 +1,6 @@
 # train_ADNI.py
 
-#python train_ADNI.py --with_condition
+#python train_ADNI.py --with_condition # now not needed --with_condition
 
 import os 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
@@ -32,10 +32,10 @@ with open("key.yaml") as file:
 key=config["wandb"]["key"]
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--inputfolder', type=str, default="../ADNI_split/ADNI_train_dataset/mask/")
-parser.add_argument('-t', '--targetfolder', type=str, default="../ADNI_split/ADNI_train_dataset/image/")
-parser.add_argument('-d', '--diagnosisfolder', type=str, default="../ADNI_split/ADNI_train_dataset/diagnosis/")
-parser.add_argument('--validationfolder', type=str, default="../ADNI_split/ADNI_validation_dataset/")
+parser.add_argument('-i', '--inputfolder', type=str, default="../head_datasets/ADNI_train_dataset/mask/")
+parser.add_argument('-t', '--targetfolder', type=str, default="../head_datasets/ADNI_train_dataset/image/")
+parser.add_argument('-d', '--diagnosisfolder', type=str, default="../head_datasets/ADNI_train_dataset/diagnosis/")
+parser.add_argument('--validationfolder', type=str, default="../head_datasets/ADNI_validation_dataset/")
 parser.add_argument('--key', type=str, default=key ,help="Weights and Biases key for logging")
 parser.add_argument('--input_size', type=int, default=128) # already for preprocessed ADNI
 parser.add_argument('--depth_size', type=int, default=128) # already for preprocessed ADNI
@@ -47,14 +47,15 @@ parser.add_argument('--train_lr', type=float, default=2e-4) # ex e5
 #parser.add_argument('--lr_decay_rate', type=float, default=0.9999)  # learning rate decay rate for ExponentialLR
 parser.add_argument('--lr_warmup_steps', type=int, default=5000)  # decay steps for learning rate scheduler 
 parser.add_argument('--lr_min', type=float, default=2e-7)  # minimum learning rate after warmup
+parser.add_argument('--t_max_step', type=int, default=120000) # tot steps
 ## plateau lr scheduler parameters
 #parser.add_argument('--lr_plateau_factor', type=float, default=0.5)  # factor for ReduceLROnPlateau
 #parser.add_argument('--lr_plateau_patience', type=int, default=500)  # patience for ReduceLROnPlateau
 parser.add_argument('--batchsize', type=int, default=1)
-parser.add_argument('--epochs', type=int, default=200000) # epochs parameter specifies the number of training iterations # ex 50000
+parser.add_argument('--epochs', type=int, default=180000)#200000) # epochs parameter specifies the number of training iterations # ex 50000
 parser.add_argument('--timesteps', type=int, default=250)
 parser.add_argument('--save_and_sample_every', type=int, default=1000)
-parser.add_argument('--loss_type', type=str, default="leh", help="loss type for training: l1, l2, leb, leh")
+parser.add_argument('--loss_type', type=str, default="l1", help="loss type for training: l1, l2, leb, leh")
 parser.add_argument('--with_condition', action='store_true', help='whether to use condition or not with semantic mask and diagnosis label')
 parser.add_argument('-r', '--resume_weight', type=str, default="model/model_128.pt")
 
@@ -71,7 +72,7 @@ num_channels = args.num_channels
 num_res_blocks = args.num_res_blocks
 num_class_labels = args.num_class_labels
 save_and_sample_every = args.save_and_sample_every
-with_condition = args.with_condition
+with_condition = True #args.with_condition
 resume_weight = args.resume_weight
 train_lr = args.train_lr
 
@@ -237,13 +238,14 @@ trainer = Trainer(
     save_and_sample_every = save_and_sample_every,
     initial_weights=initial_weights,
     lr_warmup_steps = args.lr_warmup_steps,  # warmup--> start of lr decay steps # now cosine annealing lr scheduler
+    t_max_step = args.t_max_step,
     ## exp lr scheduler parameters
     #lr_decay_rate = args.lr_decay_rate,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
     ## plateau lr scheduler parameters
     #lr_plateau_factor = args.lr_plateau_factor,
     #lr_plateau_patience = args.lr_plateau_patience,
     lr_min = args.lr_min,
-    results_folder=f"./results/results_{now}"
+    results_folder=f"./results/{now}"
 )
 
 trainer.train()

@@ -109,7 +109,8 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
             print(f"Generating sample {i+1}/{num_samples}...")
 
             if seed is not None:
-                torch.manual_seed(seed + i)  # Increment seed for each sample
+                seed_i = seed + i*6
+                torch.manual_seed(seed + i*6)  # Increment seed of 6 for each sample
             
             generated = diffusion.sample( # function in trainer Gaussian diffusion class line 245
                 batch_size=1,
@@ -122,7 +123,7 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
             
             # Save as NIfTI with correct affine transformation
             nifti_img = nib.Nifti1Image(sample_img, affine=original_affine) # affine from mask file
-            save_path_img = os.path.join(output_path, f'{subject_id}_sampled_{idx_to_label[diagnosis_label]}{"" if seed is None else "_" + str(seed + i) }.nii.gz')
+            save_path_img = os.path.join(output_path, f'{subject_id}_sampled_{idx_to_label[diagnosis_label]}{"" if seed is None else "_" + str(seed_i) }.nii.gz')
             nib.save(nifti_img, save_path_img)
             print(f"Saved to {save_path_img}")
 

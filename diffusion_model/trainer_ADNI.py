@@ -323,7 +323,7 @@ class Trainer(object):
         depth_size = 128,
         train_batch_size = 2,
         train_lr = 2e-4,
-        train_num_steps = 100000,
+        train_num_steps = 180000,
         gradient_accumulate_every = 2, 
         fp16 = False,
         step_start_ema = 2000,
@@ -334,6 +334,7 @@ class Trainer(object):
         with_condition = False,
         with_pairwised = False,
         lr_warmup_steps = 5000,  # warmup steps: LINEAR increase
+        t_max_step = 120000,
         #lr_decay_rate = 0.9999,  # learning rate decay rate: for ExponentialLR LRx0.999 every optim update (slow, 0.99 faster)
         #lr_plateau_factor = 0.5, # factor for ReduceLROnPlateau
         #lr_plateau_patience = 500, # patience for ReduceLROnPlateau
@@ -365,9 +366,10 @@ class Trainer(object):
         
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
         self.lr_warmup_steps = lr_warmup_steps # number of warmup steps: LINEAR increase of lr
+        self.t_max_step
 
         # Learning rate scheduler: CosineAnnealingLR
-        self.lr_scheduler = CosineAnnealingLR(self.opt, T_max=train_num_steps - lr_warmup_steps, eta_min=lr_min) # LR minimo alla fine del training
+        self.lr_scheduler = CosineAnnealingLR(self.opt, T_max=t_max_step - lr_warmup_steps, eta_min=lr_min) # LR minimo alla fine del training
         
         ## Learning rate scheduler: ExponentialLR
         #self.lr_scheduler = ExponentialLR(self.opt, gamma=lr_decay_rate)  # learning rate exponential scheduler
@@ -460,15 +462,16 @@ class Trainer(object):
             'best_milestone': self.best_milestone,
             'val_losses': self.val_losses
         }
-        torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
-        
-        # Save best model separately
-        if is_best:
-            torch.save(data, str(self.results_folder / 'model-best.pt'))
-            if ema_val_loss is not None and ema_val_loss < self.best_ema_val_loss:
-                print(f"New best: milestone {milestone}, ema_val_loss: {ema_val_loss:.6f}")
-            else:
-                print(f"New best: milestone {milestone}, val_loss: {val_loss:.6f}")
+        if self.step > self.lr_warmup_steps:
+            torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+
+            # Save best model separately
+            if is_best:
+                torch.save(data, str(self.results_folder / 'model-best.pt'))
+                if ema_val_loss is not None and ema_val_loss < self.best_ema_val_loss:
+                    print(f"New best: milestone {milestone}, ema_val_loss: {ema_val_loss:.6f}")
+                else:
+                    print(f"New best: milestone {milestone}, val_loss: {val_loss:.6f}")
 
     def load(self, milestone):
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'))
@@ -582,7 +585,8 @@ class Trainer(object):
                         print(f"LR warmup completed, current LR set: {current_lr}, step: {self.step}")
                         print(f"Starting LR scheduler: CosineAnnealingLR with min LR: {self.lr_min}")
                 # Learning rate scheduler (CosineAnnealingLR): modifies learning rate based on cosine annealing
-                self.lr_scheduler.step() # no need for lr_min as already taken into account in CosineAnnealingLR
+                if self.step < self.t_max_step:
+                    self.lr_scheduler.step() # no need for lr_min as already taken into account in CosineAnnealingLR
 
 
             # Get current learning rate because of warmup + decay implementation
@@ -641,14 +645,17 @@ class Trainer(object):
                     affine = np.eye(4)  # Fallback to identity if not conditional
                     
                 nifti_img = nib.Nifti1Image(sampleImage, affine=affine)
-                if self.with_condition:
-                    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}-{lab}.nii.gz'))
-                else:
-                    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
+                #if self.with_condition:
+                #    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}-{lab}.nii.gz'))
+                #else:
+                #    nib.save(nifti_img, str(self.results_folder / f'sample-{milestone}.nii.gz'))
 
                 #save central slice weights and biases
                 middle_slice=sampleImage[:, :, self.depth_size//2]
-                wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
+                if self.with_condition:
+                    wandb.log({f"sample_{milestone}_{lab}": wandb.Image(middle_slice), "step": self.step})
+                else:
+                    wandb.log({f"sample_{milestone}": wandb.Image(middle_slice), "step": self.step})
                
                 # Log validation loss to wandb
                 if val_loss is not None:
