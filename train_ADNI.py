@@ -54,7 +54,7 @@ parser.add_argument('--batchsize', type=int, default=1)
 parser.add_argument('--epochs', type=int, default=200000) # epochs parameter specifies the number of training iterations # ex 50000
 parser.add_argument('--timesteps', type=int, default=250)
 parser.add_argument('--save_and_sample_every', type=int, default=1000)
-parser.add_argument('--loss_type', type=str, default="l1_l2")
+parser.add_argument('--loss_type', type=str, default="leh", help="loss type for training: l1, l2, leb, leh")
 parser.add_argument('--with_condition', action='store_true', help='whether to use condition or not with semantic mask and diagnosis label')
 parser.add_argument('-r', '--resume_weight', type=str, default="model/model_128.pt")
 

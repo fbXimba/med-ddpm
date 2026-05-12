@@ -5,7 +5,7 @@
 
 # Generate 10 samples from random test conditions
 #python sample_ADNI.py \
-#    --checkpoint ./results/results_1/model-150.pt --batch_sample --num_samples 10
+#    --checkpoint ./results/results_1/model-150.pt --num_samples 10
 
 #TODO: adjust direction!! sagittal, coronal and axial views are wrong on 3DSlicer
 
@@ -23,6 +23,14 @@ from dataset_ADNI import NiftiPairImageGenerator
 import argparse
 import pandas as pd
 import datetime
+
+idx_to_label = {
+    0: "CN",
+    1: "MCI",
+    2: "AD"
+}
+
+################################################################### functions
 
 def load_trained_model(checkpoint_path, input_size=128, depth_size=128, num_channels=64, num_res_blocks=2, timesteps=250):
     """Load the trained diffusion model"""
@@ -59,19 +67,25 @@ def load_trained_model(checkpoint_path, input_size=128, depth_size=128, num_chan
     
     return diffusion
 
-def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, output_path, num_samples=1):
+def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, output_path, num_samples=1, seed=None):
     """
     Sample images conditioned on a mask and diagnosis label
     
     Args:
-        diffusion: Trained GaussianDiffusion model
-        condition_mask_path: Path to condition mask (.nii.gz)
-        diagnosis_label: Diagnosis class (0=CN, 1=MCI, 2=AD)
-        output_path: Where to save generated image
-        num_samples: Number of samples to generate
+        diffusion: model
+            Trained GaussianDiffusion model
+        condition_mask_path: str
+            Path to condition mask (.nii.gz)
+        diagnosis_label: int
+            Diagnosis class (0=CN, 1=MCI, 2=AD)
+        output_path: str
+            Where to save generated image
+        num_samples: int
+            Number of samples to generate
     """
 
     # Load and preprocess condition mask
+    subject_id = os.path.basename(condition_mask_path).replace('_mask.nii.gz', '')
     condition_nifti = nib.load(condition_mask_path)
     condition_img = condition_nifti.get_fdata()
     original_affine = condition_nifti.affine  # Preserve affine for correct orientation
@@ -87,15 +101,18 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
     # Create diagnosis tensor
     diagnosis_tensor = torch.tensor([diagnosis_label]).long().cuda()  # [1]
     
-    print(f"Condition mask shape: {condition_tensor.shape}")
-    print(f"Diagnosis label: {diagnosis_label}")
+    #print(f"Condition mask shape: {condition_tensor.shape}")
+    #print(f"Diagnosis label: {diagnosis_label}")
     
     # Generate samples
     with torch.no_grad():
         for i in range(num_samples):
             print(f"Generating sample {i+1}/{num_samples}...")
+
+            if seed is not None:
+                torch.manual_seed(seed + i)  # Increment seed for each sample
             
-            generated = diffusion.sample( # function in trainer Gaussian diffusion class
+            generated = diffusion.sample( # function in trainer Gaussian diffusion class line 245
                 batch_size=1,
                 condition_tensors=condition_tensor,
                 diagnosis=diagnosis_tensor
@@ -106,11 +123,11 @@ def sample_from_condition(diffusion, condition_mask_path, diagnosis_label, outpu
             
             # Save as NIfTI with correct affine transformation
             nifti_img = nib.Nifti1Image(sample_img, affine=original_affine) # affine from mask file
-            save_path_img = os.path.join(output_path, f'sample_{i+1}_d{diagnosis_label}.nii.gz')
+            save_path_img = os.path.join(output_path, f'{subject_id}_sampled_{idx_to_label[diagnosis_label]}{"" if seed is None else "_" + str(seed + i) }.nii.gz')
             nib.save(nifti_img, save_path_img)
             print(f"Saved to {save_path_img}")
 
-def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder='./samples'):
+def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder='./samples', seed=None):
     """Sample from multiple conditions in the dataset"""
 
     # Sample random conditions from dataset
@@ -127,6 +144,9 @@ def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder=
         affine_matrices.append(affine)
     
     print(f"Generating {num_samples} samples...")
+
+    if seed is not None:
+        torch.manual_seed(seed)
     
     with torch.no_grad():
         generated = diffusion.sample(
@@ -146,39 +166,45 @@ def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder=
         # Use affine from original file for correct orientation
         affine = affine_matrices[i] # get corresponding affine from condition file
         nifti_img = nib.Nifti1Image(sample_img, affine=affine)
-        save_path = os.path.join(folder, f'sample_{i+1}_diagnosis{diagnosis}.nii.gz')
-        nib.save(nifti_img, save_path)
-        print(f"Saved sample {i+1} with diagnosis {diagnosis}")
+        save_path = os.path.join(folder, f'sample_{i+1}_diagnosis{idx_to_label[diagnosis]}{"" if seed is None else "_" + str(seed + i) + "B" + str(i)}.nii.gz')
+        nib.save(nifti_img, save_path) 
+        print(f"Saved sample {i+1} with diagnosis {idx_to_label[diagnosis]}")
+
+################################################################## main
 
 if __name__ == "__main__":
-    now=datetime.datetime.now().strftime("%y-%m-%dT%H:%M:%S")
+    now=datetime.datetime.now().strftime("%y%m_T%H%M%S")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default="./results/results_1/model-199.pt", help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', type=str, default="./results/260320_095902/model-118.pt", help='Path to model checkpoint')
+    parser.add_argument('--diagnosis_csv', type=str, default="../ADNI_split/ADNI_test_dataset/diagnosis/test_subjects.csv", help='Path to CSV file containing subject IDs and diagnosis labels')
     parser.add_argument('--condition_mask', type=str, help='Path to condition mask')
     parser.add_argument('--diagnosis', type=int, default=0, help='Diagnosis label (0=CN, 1=MCI, 2=AD)')
     parser.add_argument('--output', type=str, default=f'./generated_sample/{now}')
     parser.add_argument('--num_samples', type=int, default=1)
-    parser.add_argument('--batch_sample', action='store_true', help='Sample from dataset conditions')
-    parser.add_argument('--input_folder', type=str, default="../ADNI_split/ADNI_test_dataset/mask/")
-    parser.add_argument('--target_folder', type=str, default="../ADNI_split/ADNI_test_dataset/image/")
-    parser.add_argument('--timesteps', type=int, default=250) #NOTE: seen decreasing: CAN'T use diffrent one from training
+    #parser.add_argument('--batch_sample', action='store_true', help='Sample from dataset conditions')
+    parser.add_argument('--input_folder', type=str, default="../head_datasets/ADNI_test_dataset/mask/")
+    parser.add_argument('--target_folder', type=str, default="../head_datasets/ADNI_test_dataset/image/")
+    #parser.add_argument('--timesteps', type=int, default=250) #NOTE: seen decreasing: CAN'T use diffrent one from training
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     args = parser.parse_args()
     
     # Load model
-    diffusion = load_trained_model(args.checkpoint,timesteps=args.timesteps)
+    diffusion = load_trained_model(args.checkpoint,timesteps=250)
 
     os.makedirs(args.output, exist_ok=True)
     
-    if args.batch_sample:
+    if args.condition_mask is None:
         # batch sampling 
+        print("Batch sampling from dataset conditions...")
+
         # Load test dataset
-        transform = Compose([ # TODO: messed up?
+        transform = Compose([ # same as training transforms in dataset_ADNI.py
             Lambda(lambda t: torch.tensor(t).float()),
             Lambda(lambda t: t.unsqueeze(0))
         ])
         
-        diagnosis_df = pd.read_csv("../ADNI_split/ADNI_test_dataset/diagnosis/test_subjects.csv")
+        diagnosis_df = pd.read_csv(args.diagnosis_csv)
         diagnosis_labels = diagnosis_df['Diagnosis'].astype(int).tolist()
         
         dataset = NiftiPairImageGenerator(
@@ -196,7 +222,8 @@ if __name__ == "__main__":
             diffusion,
             dataset, 
             num_samples=args.num_samples, 
-            output_folder=args.output
+            output_folder=args.output,
+            seed=args.seed
         )
 
     else:
@@ -210,5 +237,6 @@ if __name__ == "__main__":
             args.condition_mask,
             args.diagnosis,
             args.output,
-            args.num_samples
+            args.num_samples,
+            seed=args.seed
         )

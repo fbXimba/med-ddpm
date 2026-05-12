@@ -118,7 +118,7 @@ class GaussianDiffusion(nn.Module):
         depth_size,
         channels = 1,
         timesteps = 1000,
-        loss_type = 'l1', # NOTE: l1 as per original but evaluate
+        loss_type = 'l1', # l1 original
         betas = None,
         with_condition = False,
         with_pairwised = False,
@@ -290,10 +290,14 @@ class GaussianDiffusion(nn.Module):
             loss = (noise - x_recon).abs().mean()
         elif self.loss_type == 'l2':
             loss = F.mse_loss(x_recon, noise)
-        elif self.loss_type == 'l1_l2':
+        elif self.loss_type == 'leb':
             loss_l1 = (noise - x_recon).abs().mean()
             loss_l2 = F.mse_loss(x_recon, noise)
-            loss = 0.3 * loss_l1 + 0.7 * loss_l2 # weighted sum coffincients to evaluate
+            loss = 0.3 * loss_l1 + 0.7 * loss_l2 # weighted sum coffincients for brain
+        elif self.loss_type == 'leh':
+            loss_l1 = (noise - x_recon).abs().mean()
+            loss_l2 = F.mse_loss(x_recon, noise)
+            loss = 0.7 * loss_l1 + 0.3 * loss_l2 # weighted sum coffincients for head
         else:
             raise NotImplementedError()
 
@@ -345,7 +349,7 @@ class Trainer(object):
         self.save_and_sample_every = save_and_sample_every
 
         self.batch_size = train_batch_size
-        self.image_size = diffusion_model.image_size
+        self.image_size = image_size # diiffussion_model.image_size
         self.depth_size = depth_size
         self.gradient_accumulate_every = gradient_accumulate_every
         self.train_num_steps = train_num_steps
