@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     with open(os.path.join(args.sample_dir, args.run, f"dataset_{args.checkpoint}{'_SC' if only_same_condition else ''}.csv"), 'w') as f:
         # header
-        f.write("Subject,Group,Seed,Filename\n")
+        f.write("Subject,Group,Seed,Filename,Filename_processed\n")
 
         for diagnosis in df['Group'].unique():
             count = 0
@@ -59,8 +59,9 @@ if __name__ == "__main__":
                 subject = df_diag['Subject'].iloc[idx]
 
                 for j in range(args.num_samples):
-                    filename = f"{subject}_sampled_{diagnosis}_{seed+j}.nii.gz"       
-                    f.write(f"{subject},{diagnosis},{seed+j},{filename}\n")
+                    filename = f"{subject}_sampled_{diagnosis}_{seed+j}.nii.gz" 
+                    filename_processed = f"{subject}_sampled_{diagnosis}_{seed+j}_processed.nii.gz"     
+                    f.write(f"{subject},{diagnosis},{seed+j},{filename},{filename_processed}\n")
 
                 mask_path = os.path.join(args.mask_dirs, f"{subject}_mask.nii.gz")
                 sample_from_condition(
