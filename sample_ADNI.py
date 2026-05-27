@@ -7,12 +7,7 @@
 #python sample_ADNI.py \
 #    --checkpoint ./results/results_1/model-150.pt --num_samples 10
 
-#TODO: adjust direction!! sagittal, coronal and axial views are wrong on 3DSlicer
-
 import os 
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
-os.environ["CUDA_VISIBLE_DEVICES"]="1" # TODO: set specific GPU if multiple available
-
 import torch
 import numpy as np
 import nibabel as nib
@@ -173,6 +168,10 @@ def batch_sample_from_dataset(diffusion, dataset, num_samples=10, output_folder=
 ################################################################## main
 
 if __name__ == "__main__":
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
+    os.environ["CUDA_VISIBLE_DEVICES"]="1" # TODO: set specific GPU if multiple available
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"]="expandable_segments:True"
+
     now=datetime.datetime.now().strftime("%y%m_T%H%M%S")
 
     parser = argparse.ArgumentParser()

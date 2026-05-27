@@ -7,6 +7,10 @@ import yaml
 import time
 
 if __name__ == "__main__":
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" # TODO: set specific GPU if multiple available
+    os.environ["CUDA_VISIBLE_DEVICES"]="1" # TODO: set specific GPU if multiple available
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"]="expandable_segments:True"
+
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
 
@@ -66,14 +70,18 @@ if __name__ == "__main__":
                     f.write(f"{subject},{diagnosis},{seed+j*6},{filename},{filename_processed}\n")
 
                 mask_path = os.path.join(args.mask_dirs, f"{subject}_mask.nii.gz")
-                sample_from_condition(
-                    diffusion,
-                    mask_path,
-                    label_to_idx[diagnosis],
-                    output_folder,
-                    args.num_samples,
-                    seed=seed
-                )
+                # Check if files already exist before sampling
+                if all(os.path.exists(os.path.join(output_folder, f"{subject}_sampled_{diagnosis}_{seed+j*6}.nii.gz")) for j in range(args.num_samples)):
+                    print(f"Samples for subject {subject} {diagnosis} already exists")
+                else:
+                    sample_from_condition(
+                        diffusion,
+                        mask_path,
+                        label_to_idx[diagnosis],
+                        output_folder,
+                        args.num_samples,
+                        seed=seed
+                    )
 
                 seed += args.num_samples*6 # increment of 6
                 count += 1
